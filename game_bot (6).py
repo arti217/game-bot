@@ -82,12 +82,12 @@ HOUSES = {
 }
 
 BUSINESSES = {
-    "Ларёк": {"price": 100000, "income": 500},
-    "Кофейня": {"price": 500000, "income": 2500},
-    "Магазин": {"price": 2000000, "income": 10000},
-    "Ресторан": {"price": 5000000, "income": 25000},
-    "Отель": {"price": 20000000, "income": 100000},
-    "ТЦ": {"price": 100000000, "income": 500000},
+    "Ларёк": {"price": 100000, "income": 5000},
+    "Кофейня": {"price": 500000, "income": 10000},
+    "Магазин": {"price": 2000000, "income": 20000},
+    "Ресторан": {"price": 5000000, "income": 40000},
+    "Отель": {"price": 20000000, "income": 80000},
+    "ТЦ": {"price": 100000000, "income": 160000},
 }
 
 # ============ БАЗА ДАННЫХ ============
@@ -120,8 +120,13 @@ def get_user(user_id):
             "last_work": None,
             "last_bonus": None,
             "last_crime": None,
+            "last_collect": None,
             "used_promos": [],
         }
+        save_data(data)
+    # Добавляем last_collect если его нет (для старых игроков)
+    if "last_collect" not in data[uid]:
+        data[uid]["last_collect"] = None
         save_data(data)
     return data[uid]
 
@@ -282,7 +287,7 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📱 Телефонов: {len(user['phones'])}
 🏠 Недвижимости: {len(user['houses'])}
 🏢 Бизнесов: {len(user['businesses'])}
-💰 Доход от бизнеса: {format_money(biz_income)}/час
+💰 Доход от бизнеса: {format_money(biz_income)}/мин
 """
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -508,7 +513,7 @@ async def cmd_business(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = []
     for biz, info in BUSINESSES.items():
         if biz in user["businesses"]:
-            status = f"✅ +{format_money(info['income'])}/час"
+            status = f"✅ +{format_money(info['income'])}/мин"
             callback = "biz_owned"
         else:
             status = f"{format_money(info['price'])}"
@@ -522,7 +527,10 @@ async def cmd_business(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Твой баланс: {format_money(user['balance'])}
 ✅ — уже куплено
 
-Бизнес приносит пассивный доход!
+Бизнес копит деньги пока ты offline!
+Собирай командой /collect
+Максимум копится 24 часа.
+
 Выбери бизнес:
 """
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -726,18 +734,49 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_collect(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Собрать доход с бизнесов"""
+    """Собрать накопленный доход с бизнесов"""
     user = get_user(update.effective_user.id)
     
     if not user["businesses"]:
         await update.message.reply_text("❌ У тебя нет бизнесов! Смотри /business")
         return
     
-    total_income = sum(BUSINESSES[b]["income"] for b in user["businesses"])
+    # Считаем доход в минуту
+    income_per_minute = sum(BUSINESSES[b]["income"] for b in user["businesses"])
+    
+    # Считаем сколько минут прошло с последнего сбора
+    if user["last_collect"]:
+        last = datetime.fromisoformat(user["last_collect"])
+        minutes_passed = int((datetime.now() - last).total_seconds() // 60)
+    else:
+        minutes_passed = 60  # Первый раз даём за час
+    
+    if minutes_passed < 1:
+        await update.message.reply_text("⏳ Доход ещё не накопился! Подожди минутку.")
+        return
+    
+    # Максимум 24 часа накопления (1440 минут)
+    minutes_passed = min(minutes_passed, 1440)
+    
+    total_income = income_per_minute * minutes_passed
     user["balance"] += total_income
+    user["last_collect"] = datetime.now().isoformat()
     update_user(update.effective_user.id, user)
     
-    await update.message.reply_text(f"💰 Собрал с бизнесов: {format_money(total_income)}")
+    hours = minutes_passed // 60
+    mins = minutes_passed % 60
+    time_text = ""
+    if hours > 0:
+        time_text += f"{hours}ч "
+    if mins > 0:
+        time_text += f"{mins}м"
+    
+    await update.message.reply_text(
+        f"💰 Собрал доход с бизнесов!\n\n"
+        f"⏱ Накопилось за: {time_text}\n"
+        f"📈 Доход/мин: {format_money(income_per_minute)}\n"
+        f"💵 Получено: {format_money(total_income)}"
+    )
 
 
 async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -870,7 +909,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 user["balance"] -= price
                 user["businesses"].append(biz_name)
                 update_user(user_id, user)
-                await query.message.reply_text(f"✅ Ты купил {biz_name} за {format_money(price)}!\n💰 Доход: {format_money(income)}/час")
+                await query.message.reply_text(f"✅ Ты купил {biz_name} за {format_money(price)}!\n💰 Доход: {format_money(income)}/мин\n\nСобирай накопленное: /collect")
     
     # Уже куплено
     elif data in ["car_owned", "phone_owned", "house_owned", "biz_owned"]:
